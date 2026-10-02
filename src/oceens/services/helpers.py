@@ -3,11 +3,23 @@
 import json
 import re
 import unicodedata
+import oceens.routers.llm._access  # deliberate violation (Lab 2, step 2.3)
 
 from typing import Dict, List, Optional
 from fastapi.responses import JSONResponse
 from sqlmodel import Session, delete, func, select
-from oceens.models import Answer, Module, Respondent, Role, Stat, StatValue, Submission, Summary, Survey, User
+from oceens.models import (
+    Answer,
+    Module,
+    Respondent,
+    Role,
+    Stat,
+    StatValue,
+    Submission,
+    Summary,
+    Survey,
+    User,
+)
 
 
 DASHBOARD_NAVIGATION = (
@@ -131,17 +143,13 @@ def _delete_orphan_students(session: Session, user_ids: set[int]) -> None:
     for user_id in user_ids:
         # Encore rattaché à un autre sondage ? → on garde
         still_respondent = session.exec(
-            select(Respondent.user_id)
-            .where(Respondent.user_id == user_id)
-            .limit(1)
+            select(Respondent.user_id).where(Respondent.user_id == user_id).limit(1)
         ).first()
         if still_respondent:
             continue
 
         # Possède-t-il un rôle à privilège ? → on garde
-        roles = session.exec(
-            select(Role.role).where(Role.user_id == user_id)
-        ).all()
+        roles = session.exec(select(Role.role).where(Role.user_id == user_id)).all()
         if any(role.split(":", 1)[0] in PRIVILEGED_ROLES for role in roles):
             continue
 
@@ -186,14 +194,14 @@ def delete_survey_with_relations(session: Session, survey_id: int) -> None:
         session.commit()
 
     except Exception as e:
-            session.rollback()
-            return JSONResponse(
-                content={"error": "Impossible de retirer ce sondage. ({e})"},
-                status_code=500,
-            )
+        session.rollback()
+        return JSONResponse(
+            content={"error": "Impossible de retirer ce sondage. ({e})"},
+            status_code=500,
+        )
 
 
-def _get_color(color_scale:dict,score:float):
+def _get_color(color_scale: dict, score: float):
     """Renvoie la couleur associée à un score selon une échelle de seuils.
 
     color_scale mappe un seuil (max) → couleur. On renvoie la couleur du
@@ -201,7 +209,7 @@ def _get_color(color_scale:dict,score:float):
     """
     color = None
     for threshold in color_scale:
-        if (score <= float(threshold)):
+        if score <= float(threshold):
             return color_scale[threshold]
 
     return color
@@ -216,12 +224,26 @@ def get_stats_by_survey(session: Session, surveys: List) -> Dict[int, Dict]:
     """
     if not surveys:
         return {}
-    
-    stats_by_survey={}
-    
+
+    stats_by_survey = {}
+
     for survey in surveys:
-        if survey["is_closed"]: #Not open
-            stats_by_survey[survey["survey_id"]] = {sv[0].name:{'value':sv[0].value,'color':_get_color(json.loads(sv[1].color_scale),sv[0].value),'short':sv[1].short,'label':sv[1].label,'suffix':sv[1].suffix,'show_explicit_positive':sv[1].show_explicit_positive} for sv in session.exec(select(StatValue,Stat).join(Stat,Stat.name==StatValue.name).where(StatValue.survey_id==survey["survey_id"])).all()}
+        if survey["is_closed"]:  # Not open
+            stats_by_survey[survey["survey_id"]] = {
+                sv[0].name: {
+                    "value": sv[0].value,
+                    "color": _get_color(json.loads(sv[1].color_scale), sv[0].value),
+                    "short": sv[1].short,
+                    "label": sv[1].label,
+                    "suffix": sv[1].suffix,
+                    "show_explicit_positive": sv[1].show_explicit_positive,
+                }
+                for sv in session.exec(
+                    select(StatValue, Stat)
+                    .join(Stat, Stat.name == StatValue.name)
+                    .where(StatValue.survey_id == survey["survey_id"])
+                ).all()
+            }
     return stats_by_survey
 
 
