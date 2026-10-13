@@ -19,3 +19,77 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
       - run: uv run pytest
+
+  # Un push sur la branche par défaut du fork, une fois architecture et tests
+  # verts : build une image par commit, taguée avec son SHA, poussée sur GHCR,
+  # puis déployée sur Fork staging. Jamais sur une pull request, jamais si
+  # architecture ou tests est rouge (if: ne remplace success() implicite que si
+  # on y appelle soi-même success()/failure()/always()/cancelled() — ici non,
+  # donc GitHub l'ajoute).
+  deploy-staging:
+    name: deploy to staging
+    needs: [architecture, tests]
+    if: github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    # Un déploiement à la fois, dans l'ordre des pushs ; un push plus récent en
+    # attente remplace un plus ancien en attente.
+    concurrency:
+      group: deploy-staging
+      cancel-in-progress: false
+    environment:
+      name: staging
+      url: ${{ steps.deploy.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Une image par commit, taguée avec lui : ce qui tourne se retrace
+      # jusqu'au run qui l'a construite. Un commit poussé deux fois n'est
+      # reconstruit qu'une fois. L'étiquette relie le paquet à ce dépôt sur
+      # GHCR. REVISION redonné à l'image : l'app le renvoie dans X-Revision.
+      - name: Build and push the image, unless it exists
+        id: image
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY,,}:$GITHUB_SHA"
+          echo "$GITHUB_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          if docker manifest inspect "$image" > /dev/null 2>&1; then
+            echo "$image already built"
+          else
+            docker build \
+              --label "org.opencontainers.image.source=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY" \
+              --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+              --build-arg "REVISION=$GITHUB_SHA" \
+              -t "$image" .
+            docker push "$image"
+          fi
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+
+      # OIDC vers une managed identity user-assigned : AZURE_CLIENT_ID est son
+      # clientId, pas un App Registration. Aucun secret client, aucun publish
+      # profile.
+      - name: Log in to Azure
+        uses: azure/login@v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy the image to staging
+        id: deploy
+        uses: ./.github/actions/deploy-to-app-service
+        with:
+          image: ${{ steps.image.outputs.image }}
+          resource-group: ${{ vars.AZURE_RESOURCE_GROUP }}
+          app-name: ${{ vars.AZURE_WEBAPP_NAME }}
+          dev-login-key: ${{ secrets.DEV_LOGIN_KEY }}
+          secret-key: ${{ secrets.SECRET_KEY }}
+          mistral-api-key: ${{ secrets.MISTRAL_API_KEY }}
+          default-provider-api-type: ${{ vars.DEFAULT_PROVIDER_API_TYPE }}
+          default-provider-base-url: ${{ vars.DEFAULT_PROVIDER_BASE_URL }}
+          default-provider-model: ${{ vars.DEFAULT_PROVIDER_MODEL }}
+          default-provider-key-env: ${{ vars.DEFAULT_PROVIDER_KEY_ENV }}
