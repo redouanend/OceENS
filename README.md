@@ -711,6 +711,57 @@ duplicates are refused.
 
 ---
 
+## Deploying Fork staging and Fork production
+
+`.github/workflows/architecture.yml` deploys this fork's default branch to two Azure App
+Service apps, `oceens-redouanend-staging` and `oceens-redouanend-production`, on one Basic
+B1 plan (always on: no cold start), resource group `rg-oceens`, region **Germany West
+Central** — this subscription's Azure for Students policy refuses France Central. Each
+app's hostname carries a random suffix on this subscription, so the workflow always reads
+it from Azure (`az webapp show --query defaultHostName`) rather than building it from the
+app's name.
+
+- **Staging, on green.** A push to the default branch, once `architecture` and `tests`
+  pass, is built into one image, tagged with its commit and pushed to GHCR, then deployed
+  to staging. The image also carries its commit as `REVISION`, sent back in the
+  `X-Revision` header of every response: the deploy only passes once `/dev/login` answers
+  `200` with that same commit, so a previous container still answering during the restart
+  doesn't count.
+- **Production, by promotion only** (not yet wired by this branch — see the Lab's step 2).
+
+Each environment's settings live in the GitHub Environment of the same name (`staging`,
+`production`), never in a committed file: the Azure OIDC identifiers
+(`AZURE_CLIENT_ID` — a user-assigned managed identity's `clientId`, not an App
+Registration — `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`, `AZURE_RESOURCE_GROUP`,
+`AZURE_WEBAPP_NAME`) and the `DEFAULT_PROVIDER_*` values as variables, and
+`DEV_LOGIN_KEY`, `SECRET_KEY`, `MISTRAL_API_KEY` as secrets. Every deploy writes them to
+the app's settings (`.github/actions/deploy-to-app-service`), along with `AUTH_MODE=dev`,
+`WEBSITES_PORT=8000` (Uvicorn's own port) and `RUN_SUMMARIES_DAEMON=1`. The workflow logs
+in to Azure through OpenID Connect, as its GitHub Environment: one managed identity, with
+a federated credential per Environment, and no client secret stored anywhere.
+
+**Both processes the old launcher started run from this one container.** `launch.sh`
+used to start `oceens` and `oceens-summaries` as two separate `screen` sessions; the
+image's `CMD` only runs `oceens`, whose `lifespan` starts the summaries daemon as a
+subprocess of its own when `RUN_SUMMARIES_DAEMON` is set — which is why every deploy
+writes `RUN_SUMMARIES_DAEMON=1` to the app. Without it, the daemon never runs and
+requested summaries stay pending, with no error to say so.
+
+### Known limits
+
+- **The database is reset at every deploy and every restart the platform makes.** Fork
+  staging and Fork production mount no durable storage: the SQLite file lives on the
+  container's own disk (`database/`, relative to `/app`), so everything written since the
+  container last started — survey answers, uploaded files, summaries — is lost when a new
+  image is deployed or the platform restarts the container.
+- **Fork staging and Fork production share one Mistral account, and so does a local run
+  with the same key.** Both environments hold the same `MISTRAL_API_KEY`, spending one
+  account's rate limit and quota together; a local `.env` with that same key spends it too,
+  so a local run that sends many requests can make Mistral answer `429` to a deployed
+  environment's calls.
+
+---
+
 ## Validating a change
 
 The automated tests are still few (`uv run pytest`) and there is no CI, so behaviour is
