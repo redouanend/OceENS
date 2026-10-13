@@ -29,5 +29,11 @@ RUN uv sync --frozen
 # Le fichier .env ne doit PAS être copié dans l'image : fournir les secrets via
 # --env-file .env au lancement (docker run) ou via les variables d'environnement.
 
+# Le commit dont l'image est construite (--build-arg REVISION=…). L'app le
+# renvoie dans l'en-tête X-Revision de chaque réponse, pour qu'un déploiement
+# sache quelle image répond. Dernier, pour garder le cache des couches au-dessus.
+ARG REVISION=unknown
+ENV REVISION=$REVISION
+
 # `oceens` est le point d'entrée installé avec le paquet (uvicorn sur 0.0.0.0:8000).
 CMD ["oceens"]
